@@ -1,0 +1,417 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Quantum Rift Runner</title>
+  <style>
+    body {
+      margin: 0;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      background: #111;
+      overflow: hidden;
+      font-family: 'Courier New', monospace;
+      color: #fff;
+    }
+    canvas {
+      border: 2px solid #0ff;
+      background: #000;
+    }
+    #ui {
+      position: absolute;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      width: 800px;
+      height: 600px;
+      background: rgba(0, 0, 0, 0.8);
+      text-align: center;
+    }
+    #startScreen, #gameOverScreen {
+      display: none;
+    }
+    #startScreen.active, #gameOverScreen.active {
+      display: flex;
+    }
+    h1 {
+      font-size: 48px;
+      color: #0ff;
+      text-shadow: 0 0 10px #0ff;
+    }
+    p {
+      font-size: 24px;
+      margin: 10px;
+    }
+    button {
+      padding: 10px 20px;
+      font-size: 18px;
+      background: #0ff;
+      color: #000;
+      border: none;
+      cursor: pointer;
+      border-radius: 5px;
+      margin: 10px;
+      text-shadow: 0 0 5px #000;
+    }
+    button:hover {
+      background: #00ccff;
+    }
+    #score, #energy {
+      position: absolute;
+      top: 20px;
+      color: #0ff;
+      font-size: 20px;
+      text-shadow: 0 0 5px #000;
+    }
+    #score {
+      left: 20px;
+    }
+    #energy {
+      right: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div id="score">Score: 0</div>
+  <div id="energy">Energy: 100%</div>
+  <div id="ui">
+    <div id="startScreen" class="active">
+      <h1>Quantum Rift Runner</h1>
+      <p>Arrow Keys: Move Up/Down</p>
+      <p>Space: Phase-Shift (Teleport)</p>
+      <p>Collect Orbs, Avoid Barriers!</p>
+      <button id="startButton">Start</button>
+    </div>
+    <div id="gameOverScreen">
+      <h1>Game Over</h1>
+      <p id="finalScore"></p>
+      <p id="highScore"></p>
+      <button id="restartButton">Restart</button>
+    </div>
+  </div>
+  <canvas id="gameCanvas" width="800" height="600"></canvas>
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const scoreDisplay = document.getElementById('score');
+    const energyDisplay = document.getElementById('energy');
+    const ui = document.getElementById('ui');
+    const startScreen = document.getElementById('startScreen');
+    const gameOverScreen = document.getElementById('gameOverScreen');
+    const startButton = document.getElementById('startButton');
+    const restartButton = document.getElementById('restartButton');
+    const finalScoreDisplay = document.getElementById('finalScore');
+    const highScoreDisplay = document.getElementById('highScore');
+
+    let score = 0;
+    let highScore = localStorage.getItem('highScore') || 0;
+    let gameActive = false;
+    let gameStarted = false;
+    let energy = 100;
+    let gameSpeed = 3;
+    let frameCount = 0;
+
+    // Player (Drone)
+    const player = {
+      x: 100,
+      y: canvas.height / 2,
+      width: 30,
+      height: 30,
+      speed: 5,
+      phaseCooldown: 0
+    };
+
+    // Obstacles (Energy Barriers)
+    const obstacles = [];
+    class Obstacle {
+      constructor() {
+        this.x = canvas.width;
+        this.y = Math.random() * (canvas.height - 100);
+        this.width = 20;
+        this.height = 50 + Math.random() * 50;
+        this.speed = gameSpeed;
+      }
+      draw() {
+        ctx.fillStyle = '#f00';
+        ctx.fillRect(this.x, this.y, this.width, this.height);
+      }
+      update() {
+        this.x -= this.speed;
+      }
+    }
+
+    // Collectibles (Quantum Orbs)
+    const orbs = [];
+    class Orb {
+      constructor() {
+        this.x = canvas.width;
+        this.y = Math.random() * (canvas.height - 20);
+        this.width = 15;
+        this.height = 15;
+        this.speed = gameSpeed;
+      }
+      draw() {
+        ctx.fillStyle = '#0ff';
+        ctx.beginPath();
+        ctx.arc(this.x + this.width / 2, this.y + this.height / 2, this.width / 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      update() {
+        this.x -= this.speed;
+      }
+    }
+
+    // Particle Effects
+    const particles = [];
+    class Particle {
+      constructor(x, y) {
+        this.x = x;
+        this.y = y;
+        this.size = Math.random() * 5 + 2;
+        this.dx = Math.random() * 4 - 2;
+        this.dy = Math.random() * 4 - 2;
+        this.life = 20;
+      }
+      draw() {
+        ctx.fillStyle = `rgba(0, 255, 255, ${this.life / 20})`;
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      update() {
+        this.x += this.dx;
+        this.y += this.dy;
+        this.life--;
+      }
+    }
+
+    // Controls
+    let upPressed = false;
+    let downPressed = false;
+    let spacePressed = false;
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowUp') upPressed = true;
+      if (e.key === 'ArrowDown') downPressed = true;
+      if (e.key === ' ') spacePressed = true;
+    });
+
+    document.addEventListener('keyup', (e) => {
+      if (e.key === 'ArrowUp') upPressed = false;
+      if (e.key === 'ArrowDown') downPressed = false;
+      if (e.key === ' ') spacePressed = false;
+    });
+
+    // Draw Functions
+    function drawPlayer() {
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.moveTo(player.x, player.y + player.height / 2);
+      ctx.lineTo(player.x + player.width, player.y);
+      ctx.lineTo(player.x + player.width, player.y + player.height);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    function drawBackground() {
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.strokeStyle = '#0ff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(0, canvas.height / 2);
+      ctx.lineTo(canvas.width, canvas.height / 2);
+      ctx.stroke();
+    }
+
+    // Update Functions
+    function updatePlayer() {
+      if (upPressed && player.y > 0) player.y -= player.speed;
+      if (downPressed && player.y + player.height < canvas.height) player.y += player.speed;
+
+      if (spacePressed && energy >= 30 && player.phaseCooldown <= 0) {
+        player.y = Math.random() * (canvas.height - player.height);
+        energy -= 30;
+        player.phaseCooldown = 60;
+        for (let i = 0; i < 20; i++) {
+          particles.push(new Particle(player.x + player.width / 2, player.y + player.height / 2));
+        }
+      }
+      if (player.phaseCooldown > 0) player.phaseCooldown--;
+      if (energy < 100) energy += 0.1;
+      energyDisplay.textContent = `Energy: ${Math.floor(energy)}%`;
+    }
+
+    function spawnObjects() {
+      if (frameCount % 60 === 0) {
+        obstacles.push(new Obstacle());
+      }
+      if (frameCount % 120 === 0) {
+        orbs.push(new Orb());
+      }
+    }
+
+    function updateObjects() {
+      obstacles.forEach((obstacle, index) => {
+        obstacle.update();
+        obstacle.draw();
+        if (obstacle.x + obstacle.width < 0) obstacles.splice(index, 1);
+      });
+
+      orbs.forEach((orb, index) => {
+        orb.update();
+        orb.draw();
+        if (orb.x + orb.width < 0) orbs.splice(index, 1);
+      });
+
+      particles.forEach((particle, index) => {
+        particle.update();
+        particle.draw();
+        if (particle.life <= 0) particles.splice(index, 1);
+      });
+    }
+
+    function checkCollisions() {
+      obstacles.forEach((obstacle, index) => {
+        if (
+          player.x < obstacle.x + obstacle.width &&
+          player.x + player.width > obstacle.x &&
+          player.y < obstacle.y + obstacle.height &&
+          player.y + player.height > obstacle.y
+        ) {
+          gameActive = false;
+          gameOverScreen.classList.add('active');
+          startScreen.classList.remove('active');
+          ui.style.display = 'flex';
+          finalScoreDisplay.textContent = `Score: ${score}`;
+          if (score > highScore) {
+            highScore = score;
+            localStorage.setItem('highScore', highScore);
+          }
+          highScoreDisplay.textContent = `High Score: ${highScore}`;
+        }
+      });
+
+      orbs.forEach((orb, index) => {
+        if (
+          player.x < orb.x + orb.width &&
+          player.x + player.width > orb.x &&
+          player.y < orb.y + orb.height &&
+          player.y + player.height > orb.y
+        ) {
+          orbs.splice(index, 1);
+          score += 50;
+          energy = Math.min(energy + 20, 100);
+          scoreDisplay.textContent = `Score: ${score}`;
+        }
+      });
+    }
+
+    // Game Loop
+    function update() {
+      if (!gameActive) return;
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      drawBackground();
+      drawPlayer();
+      updatePlayer();
+      spawnObjects();
+      updateObjects();
+      checkCollisions();
+
+      frameCount++;
+      score += 1;
+      scoreDisplay.textContent = `Score: ${score}`;
+      gameSpeed += 0.001;
+      obstacles.forEach(obstacle => (obstacle.speed = gameSpeed));
+      orbs.forEach(orb => (orb.speed = gameSpeed));
+
+      requestAnimationFrame(update);
+    }
+
+    // Start and Restart
+    startButton.addEventListener('click', () => {
+      gameActive = true;
+      gameStarted = true;
+      score = 0;
+      energy = 100;
+      gameSpeed = 3;
+      frameCount = 0;
+      player.y = canvas.height / 2;
+      player.phaseCooldown = 0;
+      obstacles.length = 0;
+      orbs.length = 0;
+      particles.length = 0;
+      scoreDisplay.textContent = `Score: ${score}`;
+      energyDisplay.textContent = `Energy: ${energy}%`;
+      ui.style.display = 'none';
+      startScreen.classList.remove('active');
+      update();
+    });
+
+    restartButton.addEventListener('click', () => {
+      gameActive = true;
+      score = 0;
+      energy = 100;
+      gameSpeed = 3;
+      frameCount = 0;
+      player.y = canvas.height / 2;
+      player.phaseCooldown = 0;
+      obstacles.length = 0;
+      orbs.length = 0;
+      particles.length = 0;
+      scoreDisplay.textContent = `Score: ${score}`;
+      energyDisplay.textContent = `Energy: ${energy}%`;
+      ui.style.display = 'none';
+      gameOverScreen.classList.remove('active');
+      update();
+    });
+
+    // Initial High Score Display
+    highScoreDisplay.textContent = `High Score: ${highScore}`;
+  </script>
+</body>
+</html>
