@@ -2,3 +2,4 @@
 Created a game with HTML, CSS and JS.
 PLay the Game.💻
 Make Your High Score.🚀
+link:  https://thevivek10.github.io/Quantum-Rift-Runner/
